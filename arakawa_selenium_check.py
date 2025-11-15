@@ -133,7 +133,7 @@ def open_and_login(driver):
     # STEP5: チェックボックス input[11] をクリック
     checkbox = wait.until(
         EC.element_to_be_clickable(
-            (By.XPATH, '//*[@id="contents"]/form[1]/div/div/dl/dd[2]/input[11]')
+            (By.XPATH, '//*[@id="contents"]/form[1]/div/div/dl/dd[2]/input[15]')
         )
     )
     driver.execute_script("arguments[0].scrollIntoView(true);", checkbox)
