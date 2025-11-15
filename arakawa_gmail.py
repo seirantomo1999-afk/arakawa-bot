@@ -44,7 +44,7 @@ if __name__ == "__main__":
 
     # ===== スクレイピングの結果を本文にする =====
     result = subprocess.run(
-        ["python", r"C:\Users\seira\OneDrive\デスクトップ\arakawa_selenium_check.py"],
+        ["python", r"arakawa_selenium_check.py"],
         capture_output=True, text=True, timeout=900
     )
     raw_out = (result.stdout or "").splitlines()
