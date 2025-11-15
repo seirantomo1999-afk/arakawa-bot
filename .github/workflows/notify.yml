@@ -1,4 +1,4 @@
-name: park_notifier
+name: arakawa_park_notifier
 
 on:
   workflow_dispatch: {}
