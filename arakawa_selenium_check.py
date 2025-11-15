@@ -116,8 +116,6 @@ def open_and_login(driver):
     )
     login_btn.click()
 
-    print("ログインボタン押下完了！")
-
     # STEP4: 次のメニュー（li[8]/a）をクリック
     next_menu = wait.until(
         EC.element_to_be_clickable(
@@ -128,8 +126,6 @@ def open_and_login(driver):
     driver.execute_script("arguments[0].scrollIntoView(true);", next_menu)
     next_menu.click()
 
-    print("メニュー li[8] をクリック完了！")
-
     # STEP5: チェックボックス input[11] をクリック
     checkbox = wait.until(
         EC.element_to_be_clickable(
@@ -138,7 +134,6 @@ def open_and_login(driver):
     )
     driver.execute_script("arguments[0].scrollIntoView(true);", checkbox)
     checkbox.click()
-    print("→ チェックつけた！")
 
     # STEP6: 検索ボタンクリック（#btnOK）
     search_btn = wait.until(
@@ -148,10 +143,6 @@ def open_and_login(driver):
     )
     driver.execute_script("arguments[0].scrollIntoView(true);", search_btn)
     search_btn.click()
-
-    print("→ 検索ボタンを押しました！")
-    print("→ 次のページに遷移しているはずです")
-
 
 def scrape_one_day(driver):
     """検索結果画面で class='ok' の td を列挙しつつ、『日付』『時間』『コート名』を表示。"""
@@ -246,7 +237,6 @@ def scrape_one_day(driver):
                         time_text = "時間不明"
 
         line = f"[{i}] {date_text}, {time_text}, {court_text} に空きがあります。"
-        print(line)
         results.append(line)
 
     return results
