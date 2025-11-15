@@ -7,7 +7,7 @@ from selenium.webdriver.support import expected_conditions as EC
 import re 
 
 
-def create_driver(show_browser: bool = True) -> webdriver.Chrome:
+def create_driver(show_browser: bool = False) -> webdriver.Chrome:
     options = Options()
     if not show_browser:
         options.add_argument("--headless=new")
