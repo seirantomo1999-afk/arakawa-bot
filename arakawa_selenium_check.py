@@ -129,7 +129,7 @@ def open_and_login(driver):
     # STEP5: チェックボックス input[11] をクリック
     checkbox = wait.until(
         EC.element_to_be_clickable(
-            (By.XPATH, '//*[@id="contents"]/form[1]/div/div/dl/dd[2]/input[15]')
+            (By.XPATH, '//*[@id="contents"]/form[1]/div/div/dl/dd[2]/input[11]')
         )
     )
     driver.execute_script("arguments[0].scrollIntoView(true);", checkbox)
@@ -143,6 +143,31 @@ def open_and_login(driver):
     )
     driver.execute_script("arguments[0].scrollIntoView(true);", search_btn)
     search_btn.click()
+
+def _build_block_time_mapping(block_elem) -> dict:
+    """
+    施設ブロック内の時間ヘッダー行から、列インデックス→時間帯のマッピングを構築する。
+    block_elem: table または tbody など、施設ブロックのルート要素
+    戻り値: {"1": "09:00-09:30", "2": "09:30-10:00", ...}
+    """
+    mapping = {}
+    try:
+        # ブロック内の th[id^='td'] をすべて取得
+        ths = block_elem.find_elements(
+            By.XPATH, ".//th[starts-with(@id,'td') and contains(@id,'_')]"
+        )
+        for th in ths:
+            tid = th.get_attribute("id") or ""
+            m = re.match(r"td\d+_(\d+)$", tid)
+            if m:
+                col_idx = m.group(1)
+                raw = th.text.replace("\n", "").replace(" ", "").strip()
+                if raw:
+                    mapping[col_idx] = raw
+    except Exception:
+        pass
+    return mapping
+
 
 def scrape_one_day(driver):
     """検索結果画面で class='ok' の td を列挙しつつ、『日付』『時間』『コート名』を表示。"""
@@ -194,7 +219,24 @@ def scrape_one_day(driver):
             except Exception:
                 row_tr = None
 
-            # 3) コート名：同じ行の先頭 th
+            # 3) 時間ヘッダーを含む要素を取得
+            # 構造: table > thead(時間) + tbody(コート行)... の繰り返し。thead と tbody は兄弟。
+            # tbody に属する行の場合、直前の thead がそのブロックの時間ヘッダー
+            header_elem = None
+            if row_tr is not None:
+                try:
+                    tbody = row_tr.find_element(By.XPATH, "./ancestor::tbody[1]")
+                    # tbody の直前の thead がこの施設ブロックの時間ヘッダー
+                    header_elem = tbody.find_element(By.XPATH, "./preceding-sibling::thead[1]")
+                except Exception:
+                    try:
+                        # tbody がない場合（例: 暗黙の tbody）は table 内の thead を探す
+                        table = row_tr.find_element(By.XPATH, "./ancestor::table[1]")
+                        header_elem = table.find_element(By.XPATH, ".//thead[1]")
+                    except Exception:
+                        pass
+
+            # 4) コート名：同じ行の先頭 th
             if row_tr is not None:
                 try:
                     court_th = row_tr.find_element(By.XPATH, "./th[1]")
@@ -202,39 +244,10 @@ def scrape_one_day(driver):
                 except Exception:
                     pass
 
-                # 4) 時間：自分の行より上にある時間行から同じ列番号の th を探す
-                try:
-                    header_tr = row_tr.find_element(
-                        By.XPATH,
-                        (
-                            "./preceding-sibling::tr"
-                            f"[.//th[starts-with(@id,'td') "
-                            f"and substring-after(@id,'_')='{col_index}']][1]"
-                        )
-                    )
-                    time_th = header_tr.find_element(
-                        By.XPATH,
-                        (
-                            f".//th[starts-with(@id,'td') "
-                            f"and substring-after(@id,'_')='{col_index}'][1]"
-                        )
-                    )
-                    raw = time_th.text
-                    time_text = raw.replace("\n", "").replace(" ", "") or "時間不明"
-                except Exception:
-                    # 見つからなければページ全体から同じ列番号を探す
-                    try:
-                        fallback_th = driver.find_element(
-                            By.XPATH,
-                            (
-                                f"//th[starts-with(@id,'td') "
-                                f"and substring-after(@id,'_')='{col_index}'][1]"
-                            )
-                        )
-                        raw = fallback_th.text
-                        time_text = raw.replace("\n", "").replace(" ", "") or "時間不明"
-                    except Exception:
-                        time_text = "時間不明"
+                # 5) 時間：同じ施設ブロックの thead から列→時間マッピングを取得
+                if header_elem is not None:
+                    time_mapping = _build_block_time_mapping(header_elem)
+                    time_text = time_mapping.get(col_index, "時間不明")
 
         line = f"[{i}] {date_text}, {time_text}, {court_text} に空きがあります。"
         results.append(line)
