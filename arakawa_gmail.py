@@ -78,7 +78,7 @@ if __name__ == "__main__":
     # 予約完了通知（BOOKED: で始まる行を解析）
     booked_lines = [ln.strip().replace("BOOKED:", "", 1).strip() for ln in raw_out if "BOOKED:" in ln]
     if booked_lines:
-        subject = "【予約完了】荒川区テニスコート 予約が完了しました"
+        subject = "【自動通知】荒川区テニスコート 予約が完了しました"
         body_parts = ["以下の枠で予約が完了しました。", ""]
         for i, line in enumerate(booked_lines, 1):
             body_parts.append(f"{i}. {line}")
