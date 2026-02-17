@@ -55,6 +55,8 @@ VALID_START_TIMES = ("09:00", "10:00", "11:00", "13:00", "15:00", "17:00", "19:0
 # 直近予約禁止: 実行日から何日以内の枠を除外するか
 MIN_DAYS_AHEAD = 3
 
+WEEKDAY_JA = ("月", "火", "水", "木", "金", "土", "日")
+
 
 class SlotInfo(NamedTuple):
     """空き枠の構造化情報（カレンダー連携・予約ロジック用）"""
@@ -72,6 +74,13 @@ class SlotInfo(NamedTuple):
         if not self.start_time or not self.end_time:
             return f"{self.date_obj.isoformat()} {self.time_text}"
         return f"{self.date_obj.isoformat()} {self.start_time}-{self.end_time}"
+
+    def to_display_format_with_weekday(self) -> str:
+        """メール用表示形式（曜日付き）。例: 2026-02-02(土) 09:00-11:00"""
+        wd = WEEKDAY_JA[self.date_obj.weekday()]
+        if not self.start_time or not self.end_time:
+            return f"{self.date_obj.isoformat()}({wd}) {self.time_text}"
+        return f"{self.date_obj.isoformat()}({wd}) {self.start_time}-{self.end_time}"
 
 
 def _parse_reiwa_date(date_text: str) -> date | None:
@@ -634,7 +643,7 @@ if __name__ == "__main__":
             print("\n--- 予約完了したコート ---")
             for s in booked_slots:
                 # arakawa_gmail が stdout から解析するためのプレフィックス
-                print(f"BOOKED: {s.to_calendar_format()}  {s.court}")
+                print(f"BOOKED: {s.to_display_format_with_weekday()}  {s.court}")
         if sys.stdin.isatty():
             input("\nEnterキーを押すとブラウザを閉じます...")
     finally:
