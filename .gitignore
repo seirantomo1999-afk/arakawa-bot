@@ -1,0 +1,13 @@
+# 認証情報（絶対にコミットしない）
+token.json
+credentials.json
+*.json.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+venv/
+.env
+.env.local

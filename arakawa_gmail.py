@@ -1,30 +1,29 @@
-# gmail_send.py
+# arakawa_gmail.py
+"""
+荒川区テニスコート予約bot - Gmail 通知
+要件定義 REQUIREMENTS.md §6: 予約成功時は必ず通知する
+- 空き枠検出時: 空き状況を通知
+- 予約完了時: 予約内容（日時・コート）を通知
+"""
 from __future__ import annotations
-import base64, os, subprocess, sys
-from email.mime.text import MIMEText
+
+import base64
+import re
+import subprocess
+import sys
 from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from google.auth.transport.requests import Request  # refresh用
-import re  # ★ 追加
 
-# Gmail送信スコープ
-SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+from arakawa_calendar import GMAIL_SCOPES, get_google_creds
+
+TO_EMAIL = "seirantomo1999@gmail.com"
+
 
 def get_service():
-    creds = None
-    if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
-            creds = flow.run_local_server(port=0)  # 初回だけブラウザで許可
-        with open("token.json", "w") as f:
-            f.write(creds.to_json())
+    """arakawa_calendar の token.json / credentials.json を使い Gmail サービスを取得"""
+    creds = get_google_creds(GMAIL_SCOPES)
     return build("gmail", "v1", credentials=creds)
 
 def create_message(to: str, subject: str, body_text: str) -> dict:
@@ -71,10 +70,22 @@ if __name__ == "__main__":
     if result.returncode != 0:
         subject = "【エラー】荒川区テニスコートスクレイピング失敗"
         body = (body + "\n\n--- エラー出力 ---\n" + (raw_err or "(なし)")).strip()
-        to = "seirantomo1999@gmail.com"
-        msg = create_message(to=to, subject=subject, body_text=body or "(本文なし)")
+        msg = create_message(to=TO_EMAIL, subject=subject, body_text=body or "(本文なし)")
         resp = send_message(service, "me", msg)
         print("Sent (error report):", resp.get("id"))
+        sys.exit(0)
+
+    # 予約完了通知（BOOKED: で始まる行を解析）
+    booked_lines = [ln.strip().replace("BOOKED:", "", 1).strip() for ln in raw_out if "BOOKED:" in ln]
+    if booked_lines:
+        subject = "【予約完了】荒川区テニスコート 予約が完了しました"
+        body_parts = ["以下の枠で予約が完了しました。", ""]
+        for i, line in enumerate(booked_lines, 1):
+            body_parts.append(f"{i}. {line}")
+        body_parts.extend(["", "※キャンセルが必要な場合は手動で区のサイトから行ってください。"])
+        msg = create_message(to=TO_EMAIL, subject=subject, body_text="\n".join(body_parts))
+        resp = send_message(service, "me", msg)
+        print("Sent (予約完了通知):", resp.get("id"))
         sys.exit(0)
 
     # 空きヒットが無ければ送らず終了
@@ -82,9 +93,8 @@ if __name__ == "__main__":
         print("空きが見つからなかったため、メール送信をスキップしました。")
         sys.exit(0)
 
-    # 空きあり → 通知送信
+    # 空きあり → 空き状況通知
     subject = "【自動通知】荒川区テニスコート 休日空き状況"
-    to = "seirantomo1999@gmail.com"
-    msg = create_message(to=to, subject=subject, body_text=body or "(本文なし)")
+    msg = create_message(to=TO_EMAIL, subject=subject, body_text=body or "(本文なし)")
     resp = send_message(service, "me", msg)
     print("Sent:", resp.get("id"))
