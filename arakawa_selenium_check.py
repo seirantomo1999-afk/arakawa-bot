@@ -303,7 +303,7 @@ def navigate_from_menu_to_search(driver):
 
     checkbox = wait.until(
         EC.element_to_be_clickable(
-            (By.XPATH, '//*[@id="contents"]/form[1]/div/div/dl/dd[2]/input[3]')
+            (By.XPATH, '//*[@id="contents"]/form[1]/div/div/dl/dd[2]/input[15]')
         )
     )
     driver.execute_script("arguments[0].scrollIntoView(true);", checkbox)
