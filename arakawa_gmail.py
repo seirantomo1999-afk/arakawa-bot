@@ -77,11 +77,21 @@ if __name__ == "__main__":
 
     # 予約完了通知（BOOKED: で始まる行を解析）
     booked_lines = [ln.strip().replace("BOOKED:", "", 1).strip() for ln in raw_out if "BOOKED:" in ln]
+    display_only_lines = [ln.strip().replace("DISPLAY_ONLY:", "", 1).strip() for ln in raw_out if "DISPLAY_ONLY:" in ln]
+    display_only_lines = list(dict.fromkeys(display_only_lines))
+
     if booked_lines:
         subject = "【自動通知】荒川区テニスコート 予約が完了しました"
         body_parts = ["以下の枠で予約が完了しました。", ""]
         for i, line in enumerate(booked_lines, 1):
             body_parts.append(f"{i}. {line}")
+
+        if display_only_lines:
+            body_parts.extend(["", "--- 自動予約対象外（ハードコート）の空き ---", ""])
+            for i, line in enumerate(display_only_lines, 1):
+                body_parts.append(f"{i}. {line}")
+            body_parts.extend(["", "※ハードコートは空き通知のみで、自動予約は行っていません。"])
+
         body_parts.extend(["", "※キャンセルが必要な場合は手動で区のサイトから行ってください。"])
         msg = create_message(to=TO_EMAIL, subject=subject, body_text="\n".join(body_parts))
         resp = send_message(service, "me", msg)
