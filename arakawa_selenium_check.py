@@ -137,6 +137,11 @@ def _is_court_in_scope(court_text: str) -> bool:
     return False
 
 
+def _is_hard_court(court_text: str) -> bool:
+    """「（ハードコート）」と表示されるコートか"""
+    return "（ハードコート）" in court_text
+
+
 def _is_within_min_days(slot_date: date, min_days: int) -> bool:
     """実行日から min_days 以内なら True（除外対象）"""
     today = date.today()
@@ -561,6 +566,8 @@ def scrape_all_days(driver, events_cache=None, filter_by_calendar_func=None) -> 
             print("\n--- この日の空き枠 ---")
             for slot in day_results:
                 print(slot.display_line)
+                if _is_hard_court(slot.court):
+                    print(f"DISPLAY_ONLY: {slot.to_display_format_with_weekday()}  {slot.court}")
 
             # 要件フィルタ → カレンダー突合
             candidates = get_reservation_candidates(day_results)
@@ -577,12 +584,14 @@ def scrape_all_days(driver, events_cache=None, filter_by_calendar_func=None) -> 
                     for s in calendar_ok:
                         print(f"  {s.to_calendar_format()}  {s.court}")
                     if DO_BOOK_FIRST_CANDIDATE:
-                        first_slot = calendar_ok[0]
-                        if try_book_first_candidate(driver, first_slot):
-                            booked_slots.append(first_slot)
-                            navigate_from_menu_to_search(driver)
-                            time.sleep(1)
-                            continue  # 検索結果ページ1からループ再開
+                        bookable_slots = [s for s in calendar_ok if not _is_hard_court(s.court)]
+                        if bookable_slots:
+                            first_slot = bookable_slots[0]
+                            if try_book_first_candidate(driver, first_slot):
+                                booked_slots.append(first_slot)
+                                navigate_from_menu_to_search(driver)
+                                time.sleep(1)
+                                continue  # 検索結果ページ1からループ再開
             else:
                 print(f"\n  [カレンダー突合] 候補0件（土日祝・3日以降・2時間枠・対象公園のいずれかで除外）→突合スキップ", flush=True)
 
