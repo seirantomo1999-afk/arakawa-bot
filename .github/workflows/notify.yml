@@ -3,8 +3,8 @@ name: arakawa_park_notifier
 on:
   workflow_dispatch: {}
   schedule:
-    # JST 07:00〜24:00（UTC 22:00〜15:59）を30分間隔
-    - cron: "0,30 22-23,0-15 * * *"
+    # JST 07:07〜翌00:37を30分間隔（毎時0分・30分を避ける）
+    - cron: "7,37 22-23,0-15 * * *"
 
 # 1) ドリフト対策：最新だけ実行（並走はキャンセル）
 concurrency:
