@@ -1,13 +1,9 @@
-# arakawa_gmail.py
-"""
-荒川区テニスコート予約bot - Gmail 通知
-要件定義 REQUIREMENTS.md §6: 予約成功時は必ず通知する
-- 空き枠検出時: 空き状況を通知
-- 予約完了時: 予約内容（日時・コート）を通知
-"""
+"""Run the scraper, notify its results, and preserve failures for Actions."""
 from __future__ import annotations
 
 import base64
+import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -15,96 +11,101 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 from googleapiclient.discovery import build
-
 from arakawa_calendar import GMAIL_SCOPES, get_google_creds
+from arakawa_config import SCRAPER_TIMEOUT_SECONDS, TO_EMAIL
 
-TO_EMAIL = "seirantomo1999@gmail.com"
+SCRIPT_DIR = Path(__file__).resolve().parent
 
 
 def get_service():
-    """arakawa_calendar の token.json / credentials.json を使い Gmail サービスを取得"""
-    creds = get_google_creds(GMAIL_SCOPES)
-    return build("gmail", "v1", credentials=creds)
+    return build("gmail", "v1", credentials=get_google_creds(GMAIL_SCOPES))
+
 
 def create_message(to: str, subject: str, body_text: str) -> dict:
     msg = MIMEMultipart()
-    msg["To"] = to
-    msg["Subject"] = subject
+    msg["To"], msg["Subject"] = to, subject
     msg.attach(MIMEText(body_text, "plain", "utf-8"))
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-    return {"raw": raw}
+    return {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")}
+
 
 def send_message(service, user_id: str, message: dict):
     return service.users().messages().send(userId=user_id, body=message).execute()
 
-if __name__ == "__main__":
-    print("Running:", __file__)
-    service = get_service()
 
-    # ===== スクレイピングの結果を本文にする =====
-    result = subprocess.run(
-        ["python", r"arakawa_selenium_check.py"],
-        capture_output=True, text=True, timeout=900
-    )
-    raw_out = (result.stdout or "").splitlines()
-    raw_err = (result.stderr or "").strip()
+def _text(value) -> str:
+    return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
 
-    # --- ② 「該当なし」行とその1つ上の行も除外 ---
-    DROP_KEYWORDS = ("該当なし", "空きなし", "A_で始まるセルは見つかりません")
 
-    filtered = []
-    for ln in raw_out:
-        # [数字] で始まる行だけを残す 例: [1] のような形式
-        if re.match(r"^\[\d+\]", ln.strip()):
-            filtered.append(ln)
+def _redact(text: str) -> str:
+    for key in ("ARAKAWA_USER_ID", "ARAKAWA_PASSWORD"):
+        value = os.getenv(key)
+        if value:
+            text = text.replace(value, "[redacted]")
+    return text
 
-    body = "\n".join(filtered).strip()
 
-    # --- ① [数字]で始まる行が1つもなければ送信しない ---
-    has_hit = any(
-        re.match(r"\[\d+\]", ln.strip())
-        for ln in filtered
-    )
+def run_scraper():
+    try:
+        return subprocess.run(
+            [sys.executable, str(SCRIPT_DIR / "arakawa_selenium_check.py")],
+            cwd=SCRIPT_DIR, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=SCRAPER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(
+            exc.cmd, 124, _text(exc.stdout),
+            _text(exc.stderr) + "\n巡回がタイムアウトしました。予約一覧を確認してください。",
+        )
 
-    # スクレイパ異常終了時はエラーメールに切り替え（任意）
+
+def messages_for_result(result):
+    lines = _text(result.stdout).splitlines()
+    booked = list(dict.fromkeys(line.removeprefix("BOOKED:").strip()
+                                for line in lines if line.startswith("BOOKED:")))
+    hard = list(dict.fromkeys(line.removeprefix("DISPLAY_ONLY:").strip()
+                              for line in lines if line.startswith("DISPLAY_ONLY:")))
+    hits = list(dict.fromkeys(line.strip() for line in lines if re.match(r"^\[\d+\]", line.strip())))
+    messages = []
+    # Send already completed bookings even when a later page fails.
+    if booked:
+        body = "以下の枠で予約が完了しました。\n\n" + "\n".join(
+            f"{i}. {line}" for i, line in enumerate(booked, 1)
+        )
+        if hard:
+            body += "\n\n--- 自動予約対象外（ハードコート）の空き ---\n" + "\n".join(hard)
+        body += "\n\n※キャンセルは手動で区のサイトから行ってください。"
+        messages.append(("【自動通知】荒川区テニスコート 予約が完了しました", body))
+    elif result.returncode == 0 and hits:
+        messages.append(("【自動通知】荒川区テニスコート 休日空き状況", "\n".join(hits)))
     if result.returncode != 0:
-        subject = "【エラー】荒川区テニスコートスクレイピング失敗"
-        body = (body + "\n\n--- エラー出力 ---\n" + (raw_err or "(なし)")).strip()
-        msg = create_message(to=TO_EMAIL, subject=subject, body_text=body or "(本文なし)")
-        resp = send_message(service, "me", msg)
-        print("Sent (error report):", resp.get("id"))
-        sys.exit(0)
+        body = f"巡回に失敗しました（終了コード: {result.returncode}）。\n予約操作の途中だった場合は区の予約一覧を確認してください。"
+        body += "\n\n--- stderr ---\n" + _text(result.stderr)[-5000:]
+        messages.append(("【エラー】荒川区テニスコートスクレイピング失敗", _redact(body)))
+    return messages
 
-    # 予約完了通知（BOOKED: で始まる行を解析）
-    booked_lines = [ln.strip().replace("BOOKED:", "", 1).strip() for ln in raw_out if "BOOKED:" in ln]
-    display_only_lines = [ln.strip().replace("DISPLAY_ONLY:", "", 1).strip() for ln in raw_out if "DISPLAY_ONLY:" in ln]
-    display_only_lines = list(dict.fromkeys(display_only_lines))
 
-    if booked_lines:
-        subject = "【自動通知】荒川区テニスコート 予約が完了しました"
-        body_parts = ["以下の枠で予約が完了しました。", ""]
-        for i, line in enumerate(booked_lines, 1):
-            body_parts.append(f"{i}. {line}")
+def main() -> int:
+    # Check mail authentication before attempting any reservation.
+    service = get_service()
+    result = run_scraper()
+    print(f"Scraper exit code: {result.returncode}", flush=True)
+    if result.returncode:
+        print(_redact(_text(result.stderr))[-5000:], file=sys.stderr, flush=True)
+    messages = messages_for_result(result)
+    failed_notification = False
+    for subject, body in messages:
+        try:
+            send_message(service, "me", create_message(TO_EMAIL, subject, body))
+            print(f"Sent: {subject}", flush=True)
+        except Exception as exc:
+            # Do not print OAuth objects or complete API responses.
+            print(f"Notification failed: {type(exc).__name__}", file=sys.stderr, flush=True)
+            failed_notification = True
+    if not messages:
+        print("空きが見つからなかったため、メール送信をスキップしました。", flush=True)
+    return 1 if result.returncode or failed_notification else 0
 
-        if display_only_lines:
-            body_parts.extend(["", "--- 自動予約対象外（ハードコート）の空き ---", ""])
-            for i, line in enumerate(display_only_lines, 1):
-                body_parts.append(f"{i}. {line}")
-            body_parts.extend(["", "※ハードコートは空き通知のみで、自動予約は行っていません。"])
 
-        body_parts.extend(["", "※キャンセルが必要な場合は手動で区のサイトから行ってください。"])
-        msg = create_message(to=TO_EMAIL, subject=subject, body_text="\n".join(body_parts))
-        resp = send_message(service, "me", msg)
-        print("Sent (予約完了通知):", resp.get("id"))
-        sys.exit(0)
+if __name__ == "__main__":
+    sys.exit(main())
 
-    # 空きヒットが無ければ送らず終了
-    if not has_hit:
-        print("空きが見つからなかったため、メール送信をスキップしました。")
-        sys.exit(0)
-
-    # 空きあり → 空き状況通知
-    subject = "【自動通知】荒川区テニスコート 休日空き状況"
-    msg = create_message(to=TO_EMAIL, subject=subject, body_text=body or "(本文なし)")
-    resp = send_message(service, "me", msg)
-    print("Sent:", resp.get("id"))

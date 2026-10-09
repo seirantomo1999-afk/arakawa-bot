@@ -11,3 +11,13 @@ __pycache__/
 venv/
 .env
 .env.local
+
+
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+node_modules/
+.wrangler/
+.dev.vars*

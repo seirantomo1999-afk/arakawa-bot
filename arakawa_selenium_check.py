@@ -10,7 +10,7 @@ import re
 import sys
 import time
 from contextlib import suppress
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import NamedTuple
 
 import jpholiday
@@ -20,25 +20,20 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select, WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+from selenium.common.exceptions import TimeoutException, UnexpectedAlertPresentException
+from arakawa_config import (
+    SHOW_BROWSER, INCLUDE_WEEKDAYS_FOR_DEBUG, INCLUDE_ALL_TIME_SLOTS_FOR_DEBUG,
+    BOOKING_ENABLED, MAX_SCAN_SECONDS, JST, reservation_credentials, today_jst,
+)
+
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
 
-# ===== 設定 =====
-# ローカルで画面を出してデバッグしたいなら True にする
-SHOW_BROWSER = True   # GitHub Actions 上では自動で headless になるのでこのままでOK
-
-# デバッグ用: 次へボタンの押下回数上限（None で無制限）
+# Optional local scan limit. Production defaults live in arakawa_config.py.
 MAX_NEXT_CLICKS = None
+DO_BOOK_FIRST_CANDIDATE = BOOKING_ENABLED
 
-# デバッグ用: True だと土日祝以外（平日）も候補にする（埋まってないので突合検証しやすい）
-INCLUDE_WEEKDAYS_FOR_DEBUG = True
-
-# デバッグ用: True だと2時間枠・開始時刻制限を外す（全枠で突合検証できる）
-INCLUDE_ALL_TIME_SLOTS_FOR_DEBUG = True
-
-# テスト用: True だと最初の候補で予約ボタン押下まで実行する
-DO_BOOK_FIRST_CANDIDATE = True
 
 # ===== 要件定義（REQUIREMENTS.md）に基づく定数 =====
 # 予約対象のコート（公園名・施設名のキーワード。いずれかに部分一致すれば対象）
@@ -50,7 +45,7 @@ PARK_KEYWORDS = (
 )
 
 # 予約枠: 2時間固定、開始時刻は以下のみ
-VALID_START_TIMES = ("09:00", "10:00", "11:00", "13:00", "15:00", "17:00", "19:00")
+VALID_START_TIMES = ("09:00", "11:00", "13:00", "15:00", "17:00", "19:00")
 
 # 直近予約禁止: 実行日から何日以内の枠を除外するか
 MIN_DAYS_AHEAD = 3
@@ -144,14 +139,13 @@ def _is_hard_court(court_text: str) -> bool:
 
 def _is_within_min_days(slot_date: date, min_days: int) -> bool:
     """実行日から min_days 以内なら True（除外対象）"""
-    today = date.today()
+    today = today_jst()
     threshold = today + timedelta(days=min_days)
     return slot_date <= threshold
 
 
 def _filter_slots_by_requirements(slots: list[SlotInfo]) -> list[SlotInfo]:
     """要件に合致する枠のみに絞る"""
-    today = date.today()
     result = []
     for s in slots:
         if not INCLUDE_WEEKDAYS_FOR_DEBUG and not _is_weekend_or_holiday(s.date_obj):
@@ -229,6 +223,7 @@ def make_driver() -> webdriver.Chrome:
 # ===== ここから Arakawa 専用ロジック =====
 
 def open_and_login(driver):
+    user_id, password = reservation_credentials()
     wait = WebDriverWait(driver, 20)
 
     # STEP0: 最初のページ
@@ -251,9 +246,8 @@ def open_and_login(driver):
     user_box.clear()
     pass_box.clear()
 
-    # ★ ここは本当は環境変数とかに逃がした方が安全
-    user_box.send_keys("90081")
-    pass_box.send_keys("1929")
+    user_box.send_keys(user_id)
+    pass_box.send_keys(password)
 
     # STEP3: ログインボタン押下
     login_btn = wait.until(
@@ -364,6 +358,8 @@ def scrape_one_day(driver) -> list[SlotInfo]:
         date_text = "日付不明"
 
     date_obj = _parse_reiwa_date(date_text)
+    if date_obj is None:
+        raise RuntimeError("検索結果の日付を取得できません。予約処理を停止します。")
 
     print("=== 空き枠一覧（日付＋時間＋コート） ===")
 
@@ -420,7 +416,7 @@ def scrape_one_day(driver) -> list[SlotInfo]:
             pass
 
         slot = SlotInfo(
-            date_obj=date_obj or date.today(),
+            date_obj=date_obj,
             date_text=date_text,
             start_time=start_time,
             end_time=end_time,
@@ -435,29 +431,33 @@ def scrape_one_day(driver) -> list[SlotInfo]:
 
 
 def init_calendar_cache():
-    """
-    カレンダーAPIを呼び出し、予定をキャッシュする。
-    ブラウザ起動前に呼ぶことで、失敗時は即座に分かる。
-    戻り値: (events_cache or None, filter_by_calendar_func or None)
-    """
+    """Fetch once; a failed calendar check must stop all booking."""
+    from arakawa_calendar import (
+        CALENDAR_SCOPES, fetch_calendar_busy_ranges, filter_by_calendar, get_google_creds,
+    )
     try:
-        from arakawa_calendar import (
-            CALENDAR_SCOPES,
-            TOKEN_PATH,
-            fetch_calendar_busy_ranges,
-            filter_by_calendar,
-            get_google_creds,
-        )
-
         creds = get_google_creds(CALENDAR_SCOPES)
-        events_cache = fetch_calendar_busy_ranges(creds)
-        return events_cache, filter_by_calendar
-    except Exception as e:
-        import traceback
+        return fetch_calendar_busy_ranges(creds), filter_by_calendar
+    except Exception as exc:
+        raise RuntimeError("カレンダーを確認できないため、予約処理を停止します。") from exc
 
-        print(">>> カレンダーAPI: エラー（以下はカレンダー突合なしで続行）", flush=True)
-        traceback.print_exc()
-        return None, None
+
+class ReservationUncertainError(RuntimeError):
+    """Stop after an ambiguous submission instead of booking the same slot again."""
+
+
+def login_with_retry(driver, attempts=2):
+    """Retry only login/search navigation, before any reservation is submitted."""
+    for attempt in range(attempts):
+        try:
+            open_and_login(driver)
+            return
+        except (TimeoutException, UnexpectedAlertPresentException):
+            if attempt + 1 == attempts:
+                raise
+            with suppress(Exception):
+                driver.switch_to.alert.accept()
+            time.sleep(2)
 
 
 def try_book_first_candidate(driver, first_slot: SlotInfo) -> bool:
@@ -474,6 +474,7 @@ def try_book_first_candidate(driver, first_slot: SlotInfo) -> bool:
     """
     if not first_slot.button_id:
         return False
+    submitted = False
     try:
         slot_btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.ID, first_slot.button_id))
@@ -519,28 +520,27 @@ def try_book_first_candidate(driver, first_slot: SlotInfo) -> bool:
         contents_link = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//*[@id='contents']/p/a"))
         )
+        submitted = True  # From this point, an uncertain result must stop the run.
         contents_link.click()
         time.sleep(0.5)
 
-        # 確認ダイアログ（予約を確定してもよろしいですか?）で OK
-        try:
-            alert = WebDriverWait(driver, 5).until(EC.alert_is_present())
-            alert.accept()
-        except Exception:
-            pass
-        time.sleep(0.5)
-
-        # ⑦ 最後の contents/p/a で予約完了→メニューに戻る
-        try:
-            final_link = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, "//*[@id='contents']/p/a"))
-            )
-            final_link.click()
-        except Exception:
-            pass
-
+        # Confirmation and completion navigation must both succeed.
+        alert = WebDriverWait(driver, 5).until(EC.alert_is_present())
+        if "予約" not in alert.text or "よろしい" not in alert.text:
+            raise ReservationUncertainError("想定外の確認ダイアログです。予約処理を停止します。")
+        alert.accept()
+        WebDriverWait(driver, 10).until(EC.staleness_of(contents_link))
+        final_link = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, "//*[@id='contents']/p/a"))
+        )
+        final_link.click()
         return True
-    except Exception:
+    except Exception as exc:
+        if submitted:
+            raise ReservationUncertainError(
+                "予約の確定結果を確認できません。区の予約一覧を手動で確認してください。"
+            ) from exc
+        print(f"予約候補の操作に失敗: {type(exc).__name__}", flush=True)
         return False
 
 
@@ -551,12 +551,17 @@ def scrape_all_days(driver, events_cache=None, filter_by_calendar_func=None) -> 
     events_cache, filter_by_calendar_func は init_calendar_cache() の戻り値を渡す。
     戻り値: (全スロット一覧, 予約完了したスロット一覧)
     """
+    if events_cache is None or filter_by_calendar_func is None:
+        raise RuntimeError("カレンダー確認結果がないため、巡回を停止します。")
     NEXT_XPATH = '//*[@id="contents"]/div[2]/div/ul/li[2]/a[1]'
     all_results: list[SlotInfo] = []
     booked_slots: list[SlotInfo] = []
     next_clicks = 0
+    deadline = time.monotonic() + MAX_SCAN_SECONDS
 
     while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("巡回の制限時間を超えました。次回実行に委ねます。")
         print("\n=== 新しい日付のスクレイピング開始 ===")
         day_results = scrape_one_day(driver)
         all_results.extend(day_results)
@@ -572,13 +577,9 @@ def scrape_all_days(driver, events_cache=None, filter_by_calendar_func=None) -> 
             # 要件フィルタ → カレンダー突合
             candidates = get_reservation_candidates(day_results)
             if candidates:
-                if events_cache is not None and filter_by_calendar_func is not None:
-                    calendar_ok = filter_by_calendar_func(candidates, events_cache=events_cache)
-                    excluded = len(candidates) - len(calendar_ok)
-                    print(f"\n  [カレンダー突合] 候補{len(candidates)}件→競合除外{excluded}件→残り{len(calendar_ok)}件", flush=True)
-                else:
-                    calendar_ok = candidates  # カレンダー未使用
-                    print("\n  [カレンダー未使用: events_cacheなし]", flush=True)
+                calendar_ok = filter_by_calendar_func(candidates, events_cache=events_cache)
+                excluded = len(candidates) - len(calendar_ok)
+                print(f"\n  [カレンダー突合] 候補{len(candidates)}件→競合除外{excluded}件→残り{len(calendar_ok)}件", flush=True)
                 if calendar_ok:
                     print("\n--- カレンダー競合なしの予約候補（この日） ---")
                     for s in calendar_ok:
@@ -589,6 +590,12 @@ def scrape_all_days(driver, events_cache=None, filter_by_calendar_func=None) -> 
                             first_slot = bookable_slots[0]
                             if try_book_first_candidate(driver, first_slot):
                                 booked_slots.append(first_slot)
+                                # Include newly booked time in this run's conflict check.
+                                events_cache.append((
+                                    datetime.fromisoformat(f"{first_slot.date_obj}T{first_slot.start_time}").replace(tzinfo=JST),
+                                    datetime.fromisoformat(f"{first_slot.date_obj}T{first_slot.end_time}").replace(tzinfo=JST),
+                                ))
+                                print(f"BOOKED: {first_slot.to_display_format_with_weekday()}  {first_slot.court}", flush=True)
                                 navigate_from_menu_to_search(driver)
                                 time.sleep(1)
                                 continue  # 検索結果ページ1からループ再開
@@ -635,7 +642,8 @@ def get_reservation_candidates(slots: list[SlotInfo]) -> list[SlotInfo]:
     return _filter_slots_by_requirements(slots)
 
 
-if __name__ == "__main__":
+def main() -> int:
+    reservation_credentials()
     # ブラウザ起動前にカレンダーAPIを呼ぶ（失敗時は即座に分かる）
     print("=== カレンダーAPI初期化（ブラウザ起動前） ===", flush=True)
     events_cache, filter_by_calendar_func = init_calendar_cache()
@@ -643,7 +651,7 @@ if __name__ == "__main__":
 
     driver = make_driver()
     try:
-        open_and_login(driver)
+        login_with_retry(driver)
         all_results, booked_slots = scrape_all_days(
             driver, events_cache=events_cache, filter_by_calendar_func=filter_by_calendar_func
         )
@@ -658,3 +666,10 @@ if __name__ == "__main__":
     finally:
         with suppress(Exception):
             driver.quit()
+
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

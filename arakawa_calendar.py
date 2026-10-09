@@ -15,6 +15,8 @@ import os
 from datetime import date, datetime, timedelta, time, timezone
 from typing import TYPE_CHECKING
 
+from arakawa_config import JST
+
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
@@ -51,6 +53,8 @@ def get_google_creds(scopes: list[str]) -> Credentials:
             with open(TOKEN_PATH, "w", encoding="utf-8") as f:
                 f.write(creds.to_json())
         else:
+            if os.getenv("GITHUB_ACTIONS") == "true":
+                raise RuntimeError("Google認証を更新できません。ローカルでtoken.jsonを再発行してください。")
             if not os.path.exists(CREDENTIALS_PATH):
                 raise FileNotFoundError(
                     f"credentials.json が見つかりません: {CREDENTIALS_PATH}\n"
@@ -77,119 +81,57 @@ def get_calendar_service():
     return build("calendar", "v3", credentials=creds)
 
 
+def _event_range(event) -> tuple[datetime, datetime]:
+    """Normalize one event; malformed data must not silently allow booking."""
+    start, end = event.get("start") or {}, event.get("end") or {}
+    if "dateTime" in start:
+        start_dt = datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end["dateTime"].replace("Z", "+00:00"))
+        if start_dt.tzinfo is None or end_dt.tzinfo is None:
+            raise ValueError("Calendar event is missing a timezone")
+    else:
+        start_dt = datetime.combine(date.fromisoformat(start["date"]), time.min, tzinfo=JST)
+        end_dt = datetime.combine(date.fromisoformat(end["date"]), time.min, tzinfo=JST)
+    if end_dt <= start_dt:
+        raise ValueError("Calendar event has an invalid range")
+    return start_dt, end_dt
+
+
+def _fetch_busy_ranges(service, time_min: datetime, time_max: datetime):
+    busy = []
+    page_token = None
+    while True:
+        response = service.events().list(
+            calendarId="primary", timeMin=time_min.isoformat(), timeMax=time_max.isoformat(),
+            singleEvents=True, orderBy="startTime", pageToken=page_token,
+        ).execute()
+        for event in response.get("items", []):
+            if event.get("status") != "cancelled":
+                busy.append(_event_range(event))
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            return busy
+
+
 def fetch_calendar_busy_ranges(creds: Credentials) -> list[tuple[datetime, datetime]]:
-    """
-    primary カレンダーの now 〜 now+3ヶ月 の予定を取得し、
-    busy_ranges = [(start_dt, end_dt), ...] に正規化する。
-    終日予定はその日 00:00〜23:59:59 を busy とする。
-    （検索結果の日付範囲に合わせて3ヶ月取得）
-    """
+    """Fetch all pages covering the next 400 days once per scan."""
     service = build("calendar", "v3", credentials=creds)
-    tz = timezone.utc
-    now = datetime.now(tz)
-    time_max = now + timedelta(days=400)  # 検索結果が翌年まで出る場合もカバー
-    time_min_str = now.isoformat()
-    time_max_str = time_max.isoformat()
+    now = datetime.now(timezone.utc)
+    return _fetch_busy_ranges(service, now, now + timedelta(days=400))
 
-    events_result = (
-        service.events()
-        .list(
-            calendarId="primary",
-            timeMin=time_min_str,
-            timeMax=time_max_str,
-            singleEvents=True,
-            orderBy="startTime",
-        )
-        .execute()
+
+def fetch_events_in_range(service, start_date: date, end_date: date):
+    return _fetch_busy_ranges(
+        service, datetime.combine(start_date, time.min, tzinfo=JST),
+        datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=JST),
     )
 
-    tz_jst = timezone(timedelta(hours=9))
-    events = events_result.get("items", [])
-    busy: list[tuple[datetime, datetime]] = []
-    for e in events:
-        start = e.get("start") or {}
-        end = e.get("end") or {}
-        if "dateTime" in start:
-            start_dt = datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00"))
-            end_dt = datetime.fromisoformat(end["dateTime"].replace("Z", "+00:00"))
-        else:
-            # 終日: Google API の end.date は exclusive（その日は含まない）
-            # 例: 3/10のみ → start=3/10, end=3/11 → 3/10 00:00〜3/10 23:59 にすべき
-            date_str = start.get("date", "")
-            end_date_str = end.get("date", date_str)
-            if not date_str:
-                continue
-            try:
-                d = date.fromisoformat(date_str)
-                end_d = date.fromisoformat(end_date_str) if end_date_str else d
-            except ValueError:
-                continue
-            start_dt = datetime.combine(d, time(0, 0, 0), tzinfo=tz_jst)
-            last_day = end_d - timedelta(days=1)  # exclusive なので1日戻す
-            end_dt = datetime.combine(last_day, time(23, 59, 59), tzinfo=tz_jst)
-        busy.append((start_dt, end_dt))
-    return busy
 
-
-def fetch_events_in_range(service, start_date: date, end_date: date) -> list[tuple[datetime, datetime]]:
-    """
-    指定期間の予定を取得（fetch_calendar_busy_ranges の date 版）。
-    service を渡す場合はこちらを使用。
-    """
-    tz = timezone.utc
-    time_min = datetime(start_date.year, start_date.month, start_date.day, 0, 0, 0, tzinfo=tz)
-    time_max = datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=tz)
-    time_max += timedelta(days=1)
-    time_min_str = time_min.isoformat()
-    time_max_str = time_max.isoformat()
-
-    events_result = (
-        service.events()
-        .list(
-            calendarId="primary",
-            timeMin=time_min_str,
-            timeMax=time_max_str,
-            singleEvents=True,
-            orderBy="startTime",
-        )
-        .execute()
-    )
-
-    tz_jst = timezone(timedelta(hours=9))
-    result: list[tuple[datetime, datetime]] = []
-    for item in events_result.get("items", []):
-        start = item.get("start") or {}
-        end = item.get("end") or {}
-        if "dateTime" in start:
-            start_dt = datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00"))
-            end_dt = datetime.fromisoformat(end["dateTime"].replace("Z", "+00:00"))
-        else:
-            # 終日: Google API の end.date は exclusive（その日は含まない）
-            date_str = start.get("date", "")
-            end_date_str = end.get("date", date_str)
-            if not date_str:
-                continue
-            try:
-                d = date.fromisoformat(date_str)
-                end_d = date.fromisoformat(end_date_str) if end_date_str else d
-            except ValueError:
-                continue
-            start_dt = datetime.combine(d, time(0, 0, 0), tzinfo=tz_jst)
-            last_day = end_d - timedelta(days=1)
-            end_dt = datetime.combine(last_day, time(23, 59, 59), tzinfo=tz_jst)
-        result.append((start_dt, end_dt))
-    return result
-
-
-def _parse_time_to_minutes(t: str) -> int:
-    """'09:00' -> 540（分）"""
-    parts = t.strip().split(":")
-    if len(parts) != 2:
-        return 0
-    try:
-        return int(parts[0]) * 60 + int(parts[1])
-    except ValueError:
-        return 0
+def _parse_time_to_minutes(value: str) -> int:
+    hour, minute = map(int, value.split(":"))
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError("Invalid time")
+    return hour * 60 + minute
 
 
 def has_calendar_conflict(slot: "SlotInfo", events: list[tuple[datetime, datetime]], tz_offset_hours: int = 9) -> bool:
@@ -197,39 +139,18 @@ def has_calendar_conflict(slot: "SlotInfo", events: list[tuple[datetime, datetim
     予約枠の前後2時間に予定が1件でもあれば True（予約不可）。
     例: 13:00-15:00 の枠 → 11:00-17:00 に予定があれば True
     """
-    if not slot.start_time or not slot.end_time:
-        return False  # 時間が不明な枠は競合なし扱い
+    try:
+        start_mins = _parse_time_to_minutes(slot.start_time)
+        end_mins = _parse_time_to_minutes(slot.end_time)
+        if end_mins <= start_mins:
+            return True
+    except (ValueError, AttributeError):
+        return True  # Unknown times cannot be approved for automatic booking.
 
-    start_mins = _parse_time_to_minutes(slot.start_time)
-    end_mins = _parse_time_to_minutes(slot.end_time)
-    if start_mins == 0 and end_mins == 0:
-        return False
-
-    # チェック範囲: 開始の2時間前 ～ 終了の2時間後
-    check_start_mins = max(0, start_mins - HOURS_BUFFER * 60)
-    check_end_mins = min(24 * 60 - 1, end_mins + HOURS_BUFFER * 60)
-
-    check_start_dt = datetime(
-        slot.date_obj.year,
-        slot.date_obj.month,
-        slot.date_obj.day,
-        check_start_mins // 60,
-        check_start_mins % 60,
-        0,
-    )
-    check_end_dt = datetime(
-        slot.date_obj.year,
-        slot.date_obj.month,
-        slot.date_obj.day,
-        check_end_mins // 60,
-        check_end_mins % 60,
-        59,
-    )
-
-    # ローカル日時を UTC で比較するためオフセットを適用（簡易: JST = UTC+9）
-    jst = timezone(timedelta(hours=tz_offset_hours))
-    check_start_utc = check_start_dt.replace(tzinfo=jst).astimezone(timezone.utc)
-    check_end_utc = check_end_dt.replace(tzinfo=jst).astimezone(timezone.utc)
+    tz = timezone(timedelta(hours=tz_offset_hours))
+    midnight = datetime.combine(slot.date_obj, time.min, tzinfo=tz)
+    check_start_utc = (midnight + timedelta(minutes=start_mins, hours=-HOURS_BUFFER)).astimezone(timezone.utc)
+    check_end_utc = (midnight + timedelta(minutes=end_mins, hours=HOURS_BUFFER)).astimezone(timezone.utc)
 
     for ev_start, ev_end in events:
         ev_start_utc = ev_start.astimezone(timezone.utc) if ev_start.tzinfo else ev_start.replace(tzinfo=timezone.utc)
@@ -261,3 +182,4 @@ def filter_by_calendar(
     max_date = max(s.date_obj for s in candidates)
     events = fetch_events_in_range(service, min_date, max_date)
     return [s for s in candidates if not has_calendar_conflict(s, events)]
+
