@@ -147,6 +147,38 @@ class CalendarTests(unittest.TestCase):
         with self.assertRaises((KeyError, ValueError)):
             calendar._event_range({"start":{"date":"2026-10-17"},"end":{}})
 
+    def test_zero_length_all_day_blocks_that_day(self):
+        start, end = calendar._event_range({
+            "summary": "終日", "start": {"date": "2026-10-17"}, "end": {"date": "2026-10-17"},
+        })
+        self.assertEqual(end - start, timedelta(days=1))
+        self.assertTrue(calendar.has_calendar_conflict(slot(), [(start, end)]))
+
+    def test_zero_length_timed_event_blocks_containing_slot(self):
+        start, end = calendar._event_range({
+            "summary": "点",
+            "start": {"dateTime": "2026-10-17T13:00:00+09:00"},
+            "end": {"dateTime": "2026-10-17T13:00:00+09:00"},
+        })
+        self.assertEqual(end - start, timedelta(minutes=1))
+        self.assertTrue(calendar.has_calendar_conflict(slot(), [(start, end)]))
+
+    def test_reversed_event_is_kept_and_fetch_continues(self):
+        service = Mock()
+        reversed_event = {
+            "summary": "逆順",
+            "start": {"dateTime": "2026-10-17T12:00:00+09:00"},
+            "end": {"dateTime": "2026-10-17T11:00:00+09:00"},
+        }
+        normal = {"start": {"date": "2026-10-18"}, "end": {"date": "2026-10-19"}}
+        service.events.return_value.list.return_value.execute.return_value = {
+            "items": [reversed_event, normal],
+        }
+        now = datetime.now(timezone.utc)
+        ranges = calendar._fetch_busy_ranges(service, now, now + timedelta(days=400))
+        self.assertEqual(len(ranges), 2)
+        self.assertLess(ranges[0][0], ranges[0][1])
+
     def test_fetches_second_page(self):
         service = Mock()
         event = {"start":{"date":"2026-10-17"},"end":{"date":"2026-10-18"}}
