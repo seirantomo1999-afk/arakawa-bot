@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "arakawa-bot-scheduler",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-09",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["7,37 22-23,0-15 * * *"] },
+  "vars": {
+    "GITHUB_REPOSITORY": "seirantomo1999-afk/arakawa-bot",
+    "GITHUB_WORKFLOW": "notify.yml",
+    "GITHUB_REF": "main",
+    "ENABLED": "true",
+    "BOOKING_ENABLED": "false"
+  }
+}
