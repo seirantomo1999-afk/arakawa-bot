@@ -68,10 +68,65 @@ test("ambiguous dispatch failure is not retried", async () => {
   assert.equal(posts, 1);
 });
 
-test("Cron records a rejected invocation when dispatch fails", async () => {
+test("Cron records a rejected invocation when dispatch fails", async (t) => {
+  const errors = [];
+  t.mock.method(console, "error", line => errors.push(JSON.parse(line)));
   let pending;
   await worker.scheduled({scheduledTime:0}, {ENABLED:"true"}, {
     waitUntil(promise) { pending = promise; },
   });
   await assert.rejects(pending, /GITHUB_TOKEN/);
+  assert.equal(errors[0].status, "failed");
+  assert.equal(errors[0].code, "scheduler_failed");
+});
+
+test("invalid token and inaccessible workflow have distinct diagnostics", async () => {
+  for (const [status, code] of [[401,"github_token_invalid"], [404,"github_resource_unavailable"]]) {
+    await assert.rejects(dispatch(env, async () => new Response(null, {status})), error => {
+      assert.equal(error.code, code);
+      assert.equal(error.operation, "run check");
+      assert.equal(error.httpStatus, status);
+      assert.equal(error.message.includes(env.GITHUB_TOKEN), false);
+      return true;
+    });
+  }
+});
+
+test("permission denial is distinguished from explicit rate limits", async () => {
+  for (const [status, headers, code] of [
+    [403, {}, "github_access_denied"],
+    [403, {"x-ratelimit-remaining":"0"}, "github_rate_limited"],
+    [403, {"retry-after":"60"}, "github_rate_limited"],
+    [429, {}, "github_rate_limited"],
+  ]) {
+    await assert.rejects(dispatch(env, async () => new Response(null, {status,headers})), error => {
+      assert.equal(error.code, code);
+      return true;
+    });
+  }
+});
+
+test("unmerged dispatch inputs fail once with configuration guidance", async () => {
+  let posts = 0;
+  await assert.rejects(dispatch(env, async (_, init) => {
+    if (init.method !== "POST") return empty();
+    posts++;
+    return new Response(null, {status:422});
+  }), error => {
+    assert.equal(error.code, "github_dispatch_configuration");
+    assert.match(error.message, /default branch/);
+    return true;
+  });
+  assert.equal(posts, 1);
+});
+
+test("Cron failure log reports the operation without echoing GitHub response data", async (t) => {
+  const errors = [];
+  t.mock.method(console, "error", line => errors.push(JSON.parse(line)));
+  t.mock.method(globalThis, "fetch", async () => new Response(env.GITHUB_TOKEN, {status:403}));
+  let pending;
+  await worker.scheduled({scheduledTime:123}, env, {waitUntil(promise) {pending=promise;}});
+  await assert.rejects(pending, /403/);
+  assert.deepEqual(errors, [{status:"failed",scheduledTime:123,code:"github_access_denied",operation:"run check",httpStatus:403}]);
+  assert.equal(JSON.stringify(errors).includes(env.GITHUB_TOKEN), false);
 });

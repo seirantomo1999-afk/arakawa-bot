@@ -39,15 +39,22 @@ GitHubのActions → `arakawa_park_notifier` → Run workflowで、ブランチm
 
 ## 3. Cloudflareへデプロイする
 
+認証には2種類あります。Cloudflareへのログイン・Worker編集権限はデプロイ用です。CloudflareからGitHubを起動するには、別途GitHubのトークンが必要です。片方の認証を直しても、もう片方の権限は変わりません。
+
 リポジトリをPCに取得し、ターミナルで `cloudflare` フォルダへ移動します。Node.js 22以上を使用します。
 
 ```powershell
 cd cloudflare
 npm ci
 npx wrangler login
+npx wrangler whoami
 npm run check
 npm run deploy
 ```
+
+リモート環境でログイン後に `localhost:8976` へ戻れない場合は、通常のログインの代わりに `npx wrangler login --device --browser=false` を使います。表示されたCloudflareのURLでコードを確認して認可します。表示コードの有効期限は通常5分です。パスワードやAPIトークンをチャットへ貼る必要はありません。
+
+`whoami` で認証済みか、対象のCloudflareアカウントが一致するか確認します。デプロイの権限エラーはそのアカウントのWorkers編集権限を確認します。既存の `CLOUDFLARE_API_TOKEN` が環境変数に設定されていると、OAuthログインより優先されます。
 
 `npm run check` はビルド確認で、デプロイしません。`npm run deploy` は初期設定のままなら定期起動が来てもGitHubを起動しません。公開HTTPエンドポイントも作りません。
 
@@ -57,7 +64,10 @@ npm run deploy
 
 ```powershell
 npx wrangler secret put GITHUB_TOKEN
+npx wrangler secret list
 ```
+
+Secret一覧に `GITHUB_TOKEN` の名前があることを確認します。一覧に名前があっても、トークンの有効性・GitHub側の権限までは保証しません。
 
 入力プロンプトにトークンを貼り付けます。トークンを `wrangler.jsonc` のvarsやソースへ書かないでください。秘密情報はCloudflareの起動トークンとGitHubの予約・Google資格情報に分けて管理します。
 
@@ -74,6 +84,22 @@ npx wrangler secret put GITHUB_TOKEN
 Cloudflareの `accepted` ログは「GitHubが起動要求を受け付けた」ことを示すだけです。取得や予約の成功はGitHubの実行ログ・通知で確認します。queued/in_progressなどの実行が残っている場合は `busy` として起動要求を見送ります。予約中の実行を新規実行が強制キャンセルすることはありません。
 
 GitHub起動APIへのPOSTは自動リトライしません。通信エラーでも起動済みの場合があるためです。Cloudflareのログに失敗が出た場合はActions履歴も確認してください。
+
+### 権限・設定の切り分け
+
+| 表示・ログ | 確認する場所 |
+|---|---|
+| Wranglerのログイン失敗／デプロイ拒否 | Cloudflare認証、対象アカウント、Workers編集権限 |
+| `disabled` | Workerの `ENABLED`。初期値は `false` |
+| `GITHUB_TOKEN is not configured` | 対象WorkerのSecret登録 |
+| `github_token_invalid`（401） | GitHubトークンの失効・削除・入力ミス。Secretを更新 |
+| `github_access_denied`（403） | 対象リポジトリの選択、Actions: Read and write、リポジトリのポリシー。レート制限の場合もある |
+| `github_rate_limited`（403/429） | GitHubの制限。`retry-after` / `x-ratelimit-reset` を確認 |
+| `github_resource_unavailable`（404） | リポジトリ／workflow名とトークンの対象。404だけではファイル不存在と断定できない |
+| `github_dispatch_configuration`（422） | mainの `workflow_dispatch`、入力、ref。Secretsを用意して修正PRをマージ |
+| `accepted` だが処理がスキップ | GitHubの `SCHEDULER_MODE` と、実行ジョブの条件 |
+
+Cloudflareは `source` と `dry_run` をGitHubへ送ります。修正PRが未マージのmainはこの入力を受け付けないため、トークンの権限が正しくても起動に失敗する可能性があります。ログは固定の診断コード・処理・HTTPステータスを記録し、トークン・APIレスポンス本文は記録しません。
 
 ## 5. 確認と元に戻す方法
 
@@ -98,4 +124,7 @@ node --test cloudflare/worker.test.js
 
 - [Cloudflare Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
 - [Cloudflare Secrets](https://developers.cloudflare.com/workers/configuration/secrets/)
+- [Wrangler認証・device login](https://developers.cloudflare.com/workers/wrangler/commands/general/)
+- [Cloudflare Workers権限](https://developers.cloudflare.com/workers/authorization/)
+- [GitHub REST APIのエラー確認](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api)
 - [GitHub workflow dispatch API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)
