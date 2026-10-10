@@ -11,7 +11,7 @@
     "GITHUB_REPOSITORY": "seirantomo1999-afk/arakawa-bot",
     "GITHUB_WORKFLOW": "notify.yml",
     "GITHUB_REF": "main",
-    "ENABLED": "false",
+    "ENABLED": "true",
     "BOOKING_ENABLED": "false"
   }
 }

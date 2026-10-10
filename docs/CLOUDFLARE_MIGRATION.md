@@ -4,9 +4,17 @@ Cloudflare Workersで定期的にGitHub Actionsを起動します。取得・予
 
 ## 現在の状態
 
-この変更は設定とコードの準備です。Cloudflareへのデプロイ、トークン登録、実サイトでの取得・予約は未実施です。単体テストでは外部アクセス・予約・メール送信をモックしています。
+起動設定はリポジトリ上で切り替えています。`cloudflare/wrangler.jsonc` の `ENABLED` は `true`、`BOOKING_ENABLED` は `false` です。自動予約は、30分間隔の起動を確認してから有効にします。実サイトの予約完了画面は未確認です。
 
-CloudflareはUTCの `7,37 22-23,0-15 * * *` で、日本時間07:07〜翌00:37に30分ごとに起動します。初期設定は `ENABLED=false`、`BOOKING_ENABLED=false` です。
+Cloudflareへのデプロイ、`GITHUB_TOKEN` の登録、GitHub変数 `SCHEDULER_MODE` は、この作業環境から変更できません。ログインと権限の設定は後で行います。反映前は次の状態です。
+
+- Worker は未デプロイのため、Cloudflare の Cron はまだ GitHub を起動しません。
+- `SCHEDULER_MODE` が未設定のため、GitHub の schedule は従来どおり動きます。
+- 区の予約サイト用 Secrets が未登録の間、定期実行は資格情報の検証で失敗します。Google の既存 Secrets はそのまま使います。
+
+単体テストでは外部アクセス・予約・メール送信をモックしています。
+
+CloudflareはUTCの `7,37 22-23,0-15 * * *` で、日本時間07:07〜翌00:37に30分ごとに起動します。
 
 ## 1. GitHub Secretsを用意する
 
@@ -19,11 +27,9 @@ CloudflareはUTCの `7,37 22-23,0-15 * * *` で、日本時間07:07〜翌00:37�
 | `GMAIL_CREDENTIALS_JSON` | 既存のGoogle OAuthクライアントJSON |
 | `GMAIL_TOKEN_JSON` | 既存のGoogle OAuthトークンJSON。Gmail送信・Calendar読取の両方が必要 |
 
-予約サイトの認証情報が公開コードに含まれていたため、パスワードを変更した値を登録してください。コードから削除しても過去のコミットの値は消えません。値をチャットやIssue、PR本文に貼る必要はありません。
+予約サイトの認証情報が公開コードに含まれていたため、あとでパスワードを変更して Secrets に登録します。コードから削除しても過去のコミットの値は消えません。値をチャットやIssue、PR本文に貼る必要はありません。未登録の間、定期実行は資格情報検証で停止します。
 
 既存のGoogle Secretsは再登録不要です。ただし権限不足・失効の場合は `docs/TOKEN_JSON.md` に従ってローカルで再認証します。CI上では対話認証を開始しません。
-
-Secretsを登録してからPRをmainへマージします。登録前にマージすると資格情報検証で停止します。
 
 ## 2. 予約をしない手動確認
 
@@ -49,14 +55,13 @@ npm ci
 npx wrangler login
 npx wrangler whoami
 npm run check
-npm run deploy
 ```
 
 リモート環境でログイン後に `localhost:8976` へ戻れない場合は、通常のログインの代わりに `npx wrangler login --device --browser=false` を使います。表示されたCloudflareのURLでコードを確認して認可します。表示コードの有効期限は通常5分です。パスワードやAPIトークンをチャットへ貼る必要はありません。
 
 `whoami` で認証済みか、対象のCloudflareアカウントが一致するか確認します。デプロイの権限エラーはそのアカウントのWorkers編集権限を確認します。既存の `CLOUDFLARE_API_TOKEN` が環境変数に設定されていると、OAuthログインより優先されます。
 
-`npm run check` はビルド確認で、デプロイしません。`npm run deploy` は初期設定のままなら定期起動が来てもGitHubを起動しません。公開HTTPエンドポイントも作りません。
+`npm run check` はビルド確認で、デプロイしません。公開HTTPエンドポイントは作りません。`ENABLED` はすでに `true` なので、`GITHUB_TOKEN` を登録してから `npm run deploy` します。
 
 [GitHubのFine-grained token作成画面](https://github.com/settings/personal-access-tokens/new)で、対象をこの `arakawa-bot` だけに限定し、Repository permissionsの **Actions: Read and write** を付与したトークンを作成します。有効期限を設定し、期限切れ前に更新します。
 
@@ -65,6 +70,7 @@ npm run deploy
 ```powershell
 npx wrangler secret put GITHUB_TOKEN
 npx wrangler secret list
+npm run deploy
 ```
 
 Secret一覧に `GITHUB_TOKEN` の名前があることを確認します。一覧に名前があっても、トークンの有効性・GitHub側の権限までは保証しません。
@@ -73,8 +79,8 @@ Secret一覧に `GITHUB_TOKEN` の名前があることを確認します。一�
 
 ## 4. 起動元を切り替える
 
-1. GitHubの[Actions Variables](https://github.com/seirantomo1999-afk/arakawa-bot/settings/variables/actions)に `SCHEDULER_MODE=cloudflare` を設定します。
-2. `cloudflare/wrangler.jsonc` の `ENABLED` を `true` に変更します。`BOOKING_ENABLED` は `false` のままにします。
+1. GitHubの[Actions Variables](https://github.com/seirantomo1999-afk/arakawa-bot/settings/variables/actions)に `SCHEDULER_MODE=cloudflare` を設定します。リポジトリの管理権限が必要です。設定前は GitHub の schedule も動きます。
+2. `cloudflare/wrangler.jsonc` の `ENABLED` は `true` です。`BOOKING_ENABLED` は `false` のままデプロイします。
 3. `npm run deploy` を実行します。設定の反映には最大15分ほどかかる場合があります。
 4. 定期実行がGitHubに `workflow_dispatch` として現れ、`Run notifier` が成功することを確認します。
 5. 30分間隔で複数回起動されていることを確認したら、`BOOKING_ENABLED=true` に変更して再度デプロイします。
@@ -90,7 +96,7 @@ GitHub起動APIへのPOSTは自動リトライしません。通信エラーで�
 | 表示・ログ | 確認する場所 |
 |---|---|
 | Wranglerのログイン失敗／デプロイ拒否 | Cloudflare認証、対象アカウント、Workers編集権限 |
-| `disabled` | Workerの `ENABLED`。初期値は `false` |
+| `disabled` | デプロイ済み Worker の `ENABLED` が `true` でない |
 | `GITHUB_TOKEN is not configured` | 対象WorkerのSecret登録 |
 | `github_token_invalid`（401） | GitHubトークンの失効・削除・入力ミス。Secretを更新 |
 | `github_access_denied`（403） | 対象リポジトリの選択、Actions: Read and write、リポジトリのポリシー。レート制限の場合もある |
