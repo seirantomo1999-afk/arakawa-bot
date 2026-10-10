@@ -82,9 +82,10 @@ def get_calendar_service():
 
 
 def _event_range(event) -> tuple[datetime, datetime]:
-    """Normalize one event; malformed data must not silently allow booking."""
+    """Normalize one event. A reversed or zero-length event still blocks that time."""
     start, end = event.get("start") or {}, event.get("end") or {}
-    if "dateTime" in start:
+    all_day = "dateTime" not in start
+    if not all_day:
         start_dt = datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00"))
         end_dt = datetime.fromisoformat(end["dateTime"].replace("Z", "+00:00"))
         if start_dt.tzinfo is None or end_dt.tzinfo is None:
@@ -92,8 +93,16 @@ def _event_range(event) -> tuple[datetime, datetime]:
     else:
         start_dt = datetime.combine(date.fromisoformat(start["date"]), time.min, tzinfo=JST)
         end_dt = datetime.combine(date.fromisoformat(end["date"]), time.min, tzinfo=JST)
-    if end_dt <= start_dt:
-        raise ValueError("Calendar event has an invalid range")
+    repaired = False
+    if end_dt < start_dt:
+        start_dt, end_dt = end_dt, start_dt
+        repaired = True
+    if end_dt == start_dt:
+        end_dt = start_dt + (timedelta(days=1) if all_day else timedelta(minutes=1))
+        repaired = True
+    if repaired:
+        label = " ".join((event.get("summary") or "無題").split())
+        print(f"カレンダー予定の範囲を補正して予定ありにしました: {label}", flush=True)
     return start_dt, end_dt
 
 
