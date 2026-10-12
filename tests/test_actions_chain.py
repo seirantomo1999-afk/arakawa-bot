@@ -40,6 +40,11 @@ class FollowUpTests(unittest.TestCase):
     def test_near_slot_scans_instead_of_sleeping_past_it(self):
         self.assertEqual(schedule.follow_up(at(22, 6, 30)), ("scan", 0))
 
+    def test_a_finished_scan_does_not_scan_the_same_slot_again(self):
+        action, wait = schedule.follow_up(at(8, 36, 30), after_scan=True)
+        self.assertEqual(action, "bridge")
+        self.assertGreater(wait, 20 * 60)
+
     def test_after_a_slot_waits_until_just_before_the_next(self):
         self.assertEqual(schedule.follow_up(at(22, 7)), ("bridge", 1710))
 

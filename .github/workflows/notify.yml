@@ -129,6 +129,7 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           SCHEDULER_MODE: ${{ vars.SCHEDULER_MODE }}
+          AFTER_SCAN: "true"
         run: python3 arakawa_schedule.py dispatch
       - name: Remove Google credentials
         if: always()

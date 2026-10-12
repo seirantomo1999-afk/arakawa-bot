@@ -43,13 +43,19 @@ def next_slot(now: datetime) -> datetime:
     raise RuntimeError("no slot within 48 hours")
 
 
-def follow_up(now: datetime) -> tuple[str, int]:
+def follow_up(now: datetime, after_scan: bool = False) -> tuple[str, int]:
     """Decide whether to scan now or sleep toward the next slot.
 
     The sleep stops one tolerance before the slot. Sleeping until the slot
     itself would make the next decision skip it and wait another 30 minutes.
+    A scan that finishes inside that tolerance must not start another scan
+    for the same slot.
     """
-    delay = int((next_slot(now) - now.astimezone(timezone.utc)).total_seconds())
+    now = now.astimezone(timezone.utc)
+    slot = next_slot(now)
+    if after_scan and (slot - now).total_seconds() <= DUE_TOLERANCE_SECONDS:
+        slot = next_slot(slot)
+    delay = int((slot - now).total_seconds())
     if delay <= DUE_TOLERANCE_SECONDS:
         return "scan", 0
     return "bridge", min(delay - DUE_TOLERANCE_SECONDS, MAX_BRIDGE_SECONDS)
@@ -173,7 +179,7 @@ def poll_for_relay(repository, token, known_ids, request, sleep, attempts: int =
     return None
 
 
-def dispatch_next(now: datetime, repository: str, ref: str, token: str, request, sleep=time.sleep):
+def dispatch_next(now: datetime, repository: str, ref: str, token: str, request, sleep=time.sleep, after_scan: bool = False):
     if os.environ.get("SCHEDULER_MODE") == "cloudflare":
         return {"status": "skipped"}
     current = os.environ.get("GITHUB_RUN_ID", "")
@@ -184,7 +190,7 @@ def dispatch_next(now: datetime, repository: str, ref: str, token: str, request,
     ):
         print("relay already active; not dispatching another", flush=True)
         return {"status": "busy"}
-    action, wait = follow_up(now)
+    action, wait = follow_up(now, after_scan=after_scan)
     slot = next_slot(now).astimezone(JST)
     print(f"next slot {slot:%Y-%m-%d %H:%M} JST via {action} wait={wait}", flush=True)
     known = {str(run.get("id")) for run in recent}
@@ -261,7 +267,10 @@ def gate() -> int:
 
 def dispatch() -> int:
     repository, ref, token = _context()
-    dispatch_next(datetime.now(timezone.utc), repository, ref, token, github_request)
+    dispatch_next(
+        datetime.now(timezone.utc), repository, ref, token, github_request,
+        after_scan=os.environ.get("AFTER_SCAN") == "true",
+    )
     return 0
 
 
