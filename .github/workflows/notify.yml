@@ -5,33 +5,71 @@ on:
     inputs:
       source:
         type: choice
-        options: [manual, cloudflare]
+        options: [manual, cloudflare, relay]
         default: manual
         description: 起動元
       dry_run:
         type: boolean
         default: true
         description: 自動予約を行わず取得・通知を確認する
+      wait_seconds:
+        type: string
+        default: "0"
+        description: relayが次の実行まで待つ秒数
   schedule:
-    # Cloudflareへ切替後はSCHEDULER_MODE変数によりジョブをスキップ
+    # GitHubのscheduleは30分枠の多くを遅延・破棄する。
+    # ここでのcronは最初の起動と、relayが切れたときの再開用。
+    # 30分間隔そのものはrelayが :07 と :37 へつなぐ。
+    # Cloudflareへ切替後はSCHEDULER_MODEによりscheduleとrelayを止める。
     - cron: "7,37 22-23,0-15 * * *"
 
 permissions:
   contents: read
+  actions: write
 
-# 予約操作の途中で既存実行をキャンセルしない
-concurrency:
-  group: arakawa_park_notifier
-  cancel-in-progress: false
+run-name: ${{ github.event_name == 'schedule' && 'schedule' || github.event.inputs.source || github.event_name }}
 
 jobs:
-  run:
-    if: >-
-      (github.event_name == 'schedule' && vars.SCHEDULER_MODE != 'cloudflare') ||
-      (github.event_name == 'workflow_dispatch' &&
-       (inputs.source != 'cloudflare' || vars.SCHEDULER_MODE == 'cloudflare'))
+  gate:
+    if: github.event_name == 'schedule' && vars.SCHEDULER_MODE != 'cloudflare'
+    concurrency:
+      group: arakawa_park_notifier_gate
+      cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Skip while a 30-minute relay is active
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: python3 arakawa_schedule.py gate
+
+  run:
+    needs: gate
+    if: >-
+      !cancelled() &&
+      (needs.gate.result == 'success' || needs.gate.result == 'skipped') &&
+      needs.gate.outputs.skip != 'true' &&
+      (
+        (github.event_name == 'schedule' && vars.SCHEDULER_MODE != 'cloudflare') ||
+        (github.event_name == 'workflow_dispatch' && inputs.source == 'manual') ||
+        (github.event_name == 'workflow_dispatch' &&
+         inputs.source == 'cloudflare' && vars.SCHEDULER_MODE == 'cloudflare') ||
+        (github.event_name == 'workflow_dispatch' &&
+         inputs.source == 'relay' && inputs.wait_seconds == '0' &&
+         vars.SCHEDULER_MODE != 'cloudflare')
+      )
+    concurrency:
+      group: arakawa_park_notifier
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       TZ: Asia/Tokyo
       PYTHONUNBUFFERED: "1"
@@ -83,7 +121,45 @@ jobs:
           ARAKAWA_BOOKING_ENABLED: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'false' || 'true' }}
           ARAKAWA_NOTIFY_EMAIL: ${{ vars.ARAKAWA_NOTIFY_EMAIL }}
         run: python arakawa_gmail.py
+      - name: Schedule next run
+        if: always() && !cancelled() && (github.event_name == 'schedule' || inputs.source == 'relay')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          SCHEDULER_MODE: ${{ vars.SCHEDULER_MODE }}
+        run: python3 arakawa_schedule.py dispatch
       - name: Remove Google credentials
         if: always()
         run: rm -f credentials.json token.json
 
+  bridge:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.source == 'relay' &&
+      inputs.wait_seconds != '0' &&
+      inputs.wait_seconds != '' &&
+      vars.SCHEDULER_MODE != 'cloudflare'
+    concurrency:
+      group: arakawa_park_notifier_bridge
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Wait until the next slot
+        env:
+          WAIT_SECONDS: ${{ inputs.wait_seconds }}
+          PYTHONUNBUFFERED: "1"
+        run: python3 arakawa_schedule.py sleep
+      - name: Dispatch next run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          SCHEDULER_MODE: ${{ vars.SCHEDULER_MODE }}
+          PYTHONUNBUFFERED: "1"
+        run: python3 arakawa_schedule.py dispatch
