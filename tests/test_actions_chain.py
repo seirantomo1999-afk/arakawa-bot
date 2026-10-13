@@ -112,6 +112,20 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(result["run_id"], 9)
         self.assertTrue(all(call[3] == "secret-token" for call in calls))
 
+    def test_a_finished_scan_blocks_a_second_one_in_the_same_slot(self):
+        def request(method, url, payload, token):
+            self.assertNotEqual(method, "POST")
+            return 200, {"workflow_runs": [{
+                "id": 9, "display_title": "relay", "status": "completed",
+                "event": "workflow_dispatch", "created_at": "2026-10-12T08:05:31Z",
+            }]}
+
+        with patch.dict(os.environ, {"GITHUB_RUN_ID": "8", "SCHEDULER_MODE": ""}):
+            result = schedule.dispatch_next(
+                at(8, 6, 30), "example/arakawa-bot", "main", "token", request,
+            )
+        self.assertEqual(result["status"], "busy")
+
     def test_an_active_relay_is_not_duplicated(self):
         def request(method, url, payload, token):
             self.assertNotEqual(method, "POST")

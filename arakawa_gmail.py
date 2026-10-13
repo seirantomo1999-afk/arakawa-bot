@@ -84,13 +84,31 @@ def messages_for_result(result):
     return messages
 
 
+def _annotate_failure(text: str):
+    """Surface the scraper error in the Actions annotation list."""
+    if os.getenv("GITHUB_ACTIONS") != "true":
+        return
+    lines = [line for line in text.splitlines() if line.strip()][-15:]
+    summary = os.getenv("GITHUB_STEP_SUMMARY")
+    if summary:
+        Path(summary).write_text(
+            "取得に失敗しました。\n\n```\n" + "\n".join(lines) + "\n```\n",
+            encoding="utf-8",
+        )
+    for line in lines:
+        safe = line.replace("%", "%25").replace("\r", "").replace("\n", "")
+        print(f"::error::{safe}", flush=True)
+
+
 def main() -> int:
     # Check mail authentication before attempting any reservation.
     service = get_service()
     result = run_scraper()
     print(f"Scraper exit code: {result.returncode}", flush=True)
     if result.returncode:
-        print(_redact(_text(result.stderr))[-5000:], file=sys.stderr, flush=True)
+        detail = _redact(_text(result.stderr))[-5000:]
+        print(detail, file=sys.stderr, flush=True)
+        _annotate_failure(detail)
     messages = messages_for_result(result)
     failed_notification = False
     for subject, body in messages:

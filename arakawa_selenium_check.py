@@ -28,7 +28,6 @@ from arakawa_config import (
 
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service as ChromeService
-from webdriver_manager.chrome import ChromeDriverManager
 
 # Optional local scan limit. Production defaults live in arakawa_config.py.
 MAX_NEXT_CLICKS = None
@@ -203,19 +202,19 @@ def build_options(headless: bool) -> Options:
 
 
 def make_driver() -> webdriver.Chrome:
-    """
-    都営スクレイパと同じノリで driver を作る。
-    - ローカル: SHOW_BROWSER の値で headless 切り替え
-    - GitHub Actions: 強制 headless
-    """
+    """Start Chrome. Actions supplies the browser installed beside the job."""
     headless = (not SHOW_BROWSER) or (os.environ.get("GITHUB_ACTIONS") == "true")
     options = build_options(headless)
-
-    # ChromeDriverManager でランナー環境に合ったドライバを取得（ここが都営と同じ発想）
-    service = ChromeService(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
-
-    # ステルス軽く
+    chrome_path = os.environ.get("CHROME_PATH", "").strip()
+    driver_path = os.environ.get("CHROMEDRIVER_PATH", "").strip()
+    if chrome_path:
+        options.binary_location = chrome_path
+    # webdriver_manager downloads a zip on every run and sometimes saves a corrupt file.
+    service = ChromeService(executable_path=driver_path) if driver_path else None
+    if service:
+        driver = webdriver.Chrome(service=service, options=options)
+    else:
+        driver = webdriver.Chrome(options=options)
     add_basic_stealth(driver)
     return driver
 

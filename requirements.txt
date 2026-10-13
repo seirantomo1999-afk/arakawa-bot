@@ -1,5 +1,4 @@
 selenium>=4.20,<5
-webdriver-manager>=4,<5
 jpholiday>=0.1,<2
 google-api-python-client>=2,<3
 google-auth-httplib2>=0.2,<1

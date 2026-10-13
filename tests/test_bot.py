@@ -1,9 +1,11 @@
 import base64
 from datetime import date, datetime, timedelta, timezone
 from email import message_from_bytes
+import io
 import os
 import subprocess
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import Mock, patch
 
 import arakawa_calendar as calendar
@@ -191,6 +193,20 @@ class CalendarTests(unittest.TestCase):
         self.assertEqual(service.events.return_value.list.call_args.kwargs["pageToken"], "next")
 
 
+class DriverTests(unittest.TestCase):
+    def test_actions_uses_the_installed_browser(self):
+        options = scraper.build_options(True)
+        with patch.dict(os.environ, {"CHROME_PATH": "C:/chrome", "CHROMEDRIVER_PATH": "C:/driver", "GITHUB_ACTIONS": "true"}), \
+             patch.object(scraper, "build_options", return_value=options), \
+             patch.object(scraper.webdriver, "Chrome") as chrome, \
+             patch.object(scraper, "ChromeService", return_value="service") as service, \
+             patch.object(scraper, "add_basic_stealth"):
+            scraper.make_driver()
+        self.assertEqual(options.binary_location, "C:/chrome")
+        service.assert_called_once_with(executable_path="C:/driver")
+        chrome.assert_called_once()
+
+
 class NotificationTests(unittest.TestCase):
     def test_no_hit_does_not_send(self):
         result = subprocess.CompletedProcess([], 0, "空きなし", "")
@@ -222,6 +238,17 @@ class NotificationTests(unittest.TestCase):
             result = mail.run_scraper()
         self.assertEqual(result.returncode, 124)
         self.assertEqual(len(mail.messages_for_result(result)), 2)
+
+    def test_actions_annotation_hides_the_password(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "ARAKAWA_PASSWORD": "secret-pass"}), \
+             patch.object(mail, "get_service", return_value=Mock()), \
+             patch.object(mail, "run_scraper", return_value=subprocess.CompletedProcess([], 1, "", "boom secret-pass")), \
+             patch.object(mail, "send_message"), \
+             redirect_stdout(stdout), redirect_stderr(stderr):
+            self.assertEqual(mail.main(), 1)
+        self.assertIn("::error::", stdout.getvalue())
+        self.assertNotIn("secret-pass", stdout.getvalue() + stderr.getvalue())
 
     def test_error_message_does_not_include_reservation_password(self):
         with patch.dict(os.environ, {"ARAKAWA_PASSWORD":"fake-private-password"}):

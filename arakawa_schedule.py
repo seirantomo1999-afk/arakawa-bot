@@ -14,6 +14,8 @@ JST = timezone(timedelta(hours=9))
 # UTC hours of cron "7,37 22-23,0-15 * * *" (JST 07:07 through 00:37).
 WINDOW_HOURS = frozenset({22, 23, *range(16)})
 SLOT_MINUTES = (7, 37)
+# A second bridge must not start another scan for a slot that just ran.
+SLOT_GUARD_SECONDS = 15 * 60
 # Wake this long before the slot so the follow-up still targets that slot.
 DUE_TOLERANCE_SECONDS = 90
 # Stay under the 6-hour job limit, including checkout and the next dispatch.
@@ -167,6 +169,33 @@ def active_runs(repository: str, token: str, request) -> list[dict]:
     return runs
 
 
+def created_at(run: dict) -> datetime | None:
+    raw = run.get("created_at")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def recent_follow_up(runs: list[dict], current_id: str, now: datetime, window: int = SLOT_GUARD_SECONDS) -> bool:
+    """True when this 30-minute slot already has a relay, including a finished one."""
+    now = now.astimezone(timezone.utc)
+    for run in runs:
+        if str(run.get("id")) == str(current_id):
+            continue
+        if not is_follow_up(run):
+            continue
+        created = created_at(run)
+        if created is None:
+            continue
+        age = (now - created.astimezone(timezone.utc)).total_seconds()
+        if 0 <= age <= window:
+            return True
+    return False
+
+
 def poll_for_relay(repository, token, known_ids, request, sleep, attempts: int = 12):
     for attempt in range(attempts):
         if attempt:
@@ -191,6 +220,9 @@ def dispatch_next(now: datetime, repository: str, ref: str, token: str, request,
         print("relay already active; not dispatching another", flush=True)
         return {"status": "busy"}
     action, wait = follow_up(now, after_scan=after_scan)
+    if action == "scan" and recent_follow_up(recent, current, now):
+        print("a scan for this slot already started; not dispatching another", flush=True)
+        return {"status": "busy"}
     slot = next_slot(now).astimezone(JST)
     print(f"next slot {slot:%Y-%m-%d %H:%M} JST via {action} wait={wait}", flush=True)
     known = {str(run.get("id")) for run in recent}

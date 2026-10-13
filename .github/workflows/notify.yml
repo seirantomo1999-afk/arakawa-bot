@@ -77,7 +77,10 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
       - name: Install Google Chrome
+        id: chrome
         uses: browser-actions/setup-chrome@v1
+        with:
+          install-chromedriver: true
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -120,6 +123,8 @@ jobs:
           ARAKAWA_PASSWORD: ${{ secrets.ARAKAWA_PASSWORD }}
           ARAKAWA_BOOKING_ENABLED: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'false' || 'true' }}
           ARAKAWA_NOTIFY_EMAIL: ${{ vars.ARAKAWA_NOTIFY_EMAIL }}
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
+          CHROMEDRIVER_PATH: ${{ steps.chrome.outputs.chromedriver-path }}
         run: python arakawa_gmail.py
       - name: Schedule next run
         if: always() && !cancelled() && (github.event_name == 'schedule' || inputs.source == 'relay')
