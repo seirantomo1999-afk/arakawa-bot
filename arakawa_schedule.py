@@ -11,8 +11,8 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 JST = timezone(timedelta(hours=9))
-# UTC hours of cron "7,37 22-23,0-15 * * *" (JST 07:07 through 00:37).
-WINDOW_HOURS = frozenset({22, 23, *range(16)})
+# Every UTC hour, so the :07 and :37 marks run all day.
+WINDOW_HOURS = frozenset(range(24))
 SLOT_MINUTES = (7, 37)
 # A second bridge must not start another scan for a slot that just ran.
 SLOT_GUARD_SECONDS = 15 * 60

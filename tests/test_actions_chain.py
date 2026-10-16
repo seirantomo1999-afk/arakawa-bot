@@ -18,16 +18,16 @@ class SlotTests(unittest.TestCase):
         self.assertEqual(schedule.next_slot(at(22, 0)), at(22, 7))
         self.assertEqual(schedule.next_slot(at(22, 7)), at(22, 37))
         self.assertEqual(schedule.next_slot(at(15, 30)), at(15, 37))
-        self.assertEqual(schedule.next_slot(at(15, 37)), at(22, 7))
+        self.assertEqual(schedule.next_slot(at(15, 37)), at(16, 7))
         self.assertEqual(schedule.next_slot(at(23, 40)), at(0, 7, day=13))
 
-    def test_delayed_night_run_targets_the_morning_slot(self):
-        # 03:48 JST is outside the window; the next start is 07:07 JST.
-        self.assertEqual(schedule.next_slot(at(18, 48)), at(22, 7))
+    def test_night_continues_on_the_next_half_hour(self):
+        # 03:48 JST is no longer a gap; the next start is 04:07 JST.
+        self.assertEqual(schedule.next_slot(at(18, 48)), at(19, 7))
 
-    def test_one_day_has_every_window_slot(self):
+    def test_one_day_has_every_half_hour(self):
         slot = at(22, 7)
-        for _ in range(36):
+        for _ in range(48):
             slot = schedule.next_slot(slot)
         self.assertEqual(slot, at(22, 7, day=13))
 
@@ -48,9 +48,9 @@ class FollowUpTests(unittest.TestCase):
     def test_after_a_slot_waits_until_just_before_the_next(self):
         self.assertEqual(schedule.follow_up(at(22, 7)), ("bridge", 1710))
 
-    def test_overnight_gap_is_split_under_the_job_limit(self):
+    def test_night_gap_is_only_the_next_half_hour(self):
         action, wait = schedule.follow_up(at(15, 50))
-        self.assertEqual((action, wait), ("bridge", schedule.MAX_BRIDGE_SECONDS))
+        self.assertEqual((action, wait), ("bridge", 930))
 
     def test_wait_input_must_be_a_small_integer(self):
         self.assertEqual(schedule.parse_wait_seconds("1710"), 1710)
@@ -171,7 +171,7 @@ class WaitTests(unittest.TestCase):
         self.assertLessEqual(remaining, schedule.DUE_TOLERANCE_SECONDS)
 
     def test_long_gap_hands_off_before_the_job_limit(self):
-        clock = {"mono": 0.0, "now": at(15, 50)}
+        clock = {"mono": 0.0, "now": at(15, 37)}
 
         def sleep(seconds):
             clock["mono"] += seconds
@@ -181,13 +181,13 @@ class WaitTests(unittest.TestCase):
             now_fn=lambda: clock["now"], sleep=sleep, monotonic=lambda: clock["mono"],
             log=lambda _line: None, heartbeat=400, max_seconds=1000,
         )
-        self.assertEqual(clock["now"], at(15, 50) + timedelta(seconds=1000))
+        self.assertEqual(clock["now"], at(15, 37) + timedelta(seconds=1000))
 
 
 class WorkflowTests(unittest.TestCase):
     def test_schedule_cron_matches_the_slot_window(self):
         text = Path(".github/workflows/notify.yml").read_text(encoding="utf-8")
-        self.assertIn('cron: "7,37 22-23,0-15 * * *"', text)
+        self.assertIn('cron: "7,37 * * * *"', text)
         self.assertIn("relay", text)
 
 

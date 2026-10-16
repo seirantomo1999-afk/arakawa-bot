@@ -19,9 +19,9 @@ on:
   schedule:
     # GitHubのscheduleは30分枠の多くを遅延・破棄する。
     # ここでのcronは最初の起動と、relayが切れたときの再開用。
-    # 30分間隔そのものはrelayが :07 と :37 へつなぐ。
+    # 30分間隔そのものはrelayが :07 と :37 へ、24時間つなぐ。
     # Cloudflareへ切替後はSCHEDULER_MODEによりscheduleとrelayを止める。
-    - cron: "7,37 22-23,0-15 * * *"
+    - cron: "7,37 * * * *"
 
 permissions:
   contents: read
